@@ -16,6 +16,7 @@ public class Coordinator {
     private let tsLanguage: SwiftTreeSitter.Language
     private let tsClient: TreeSitterClient
     private var prevViewportRange: NSTextRange?
+    private var viewportUpdatePending = false
 
     init(textView: STTextView, theme: Theme, language: TreeSitterLanguage) {
         self.language = language
@@ -88,11 +89,24 @@ public class Coordinator {
         }
     }
 
+    /// Coalesce viewport-change re-highlights to at most one per main-runloop
+    /// iteration. TextKit 2 fires `onDidLayoutViewport` many times during a
+    /// single scroll gesture as it lays out fragments incrementally; without
+    /// coalescing each tick re-runs `visibleContentDidChange()` against
+    /// adjacent, mostly-overlapping ranges and drives frame time over budget
+    /// on dense files (e.g. ~50 KB markdown at 120 Hz).
     func updateViewportRange(_ range: NSTextRange?) {
-        if range != prevViewportRange {
-            highlighter?.visibleContentDidChange()
-        }
+        guard range != prevViewportRange else { return }
         prevViewportRange = range
+
+        guard !viewportUpdatePending else { return }
+        viewportUpdatePending = true
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.viewportUpdatePending = false
+            self.highlighter?.visibleContentDidChange()
+        }
     }
 
     func willChangeContent(in range: NSRange) {
