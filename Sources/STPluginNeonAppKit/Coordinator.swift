@@ -9,10 +9,10 @@ import SwiftTreeSitter
 //import TreeSitter
 import TreeSitterResource
 
-// TEMP DIAGNOSTIC: append to /tmp/neon-dbg.log so we can read it after the run.
+// TEMP DIAGNOSTIC: write under the app container so we don't trip the sandbox.
 @inline(never)
 private func _neonDbg(_ msg: String) {
-    let path = "/tmp/neon-dbg.log"
+    let path = (NSTemporaryDirectory() as NSString).appendingPathComponent("neon-dbg.log")
     let fm = FileManager.default
     if !fm.fileExists(atPath: path) {
         fm.createFile(atPath: path, contents: nil)
