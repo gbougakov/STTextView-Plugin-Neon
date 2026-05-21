@@ -11,10 +11,22 @@ import TreeSitterResource
 
 @MainActor
 public class Coordinator {
+    /// A parallel `TreeSitterClient` for one sub-grammar injected into the host
+    /// language (e.g. `markdown_inline` injected into `markdown`). It parses
+    /// the whole document; we filter its tokens to the host's injection ranges
+    /// before applying them.
+    private struct InjectedClient {
+        let name: String
+        let client: TreeSitterClient
+        let highlightsQuery: Query
+    }
+
     private(set) var highlighter: Neon.Highlighter?
     private let language: TreeSitterLanguage
     private let tsLanguage: SwiftTreeSitter.Language
     private let tsClient: TreeSitterClient
+    private let injectedClients: [InjectedClient]
+    private let injectionsQuery: Query?
     private var prevViewportRange: NSTextRange?
     private var viewportUpdatePending = false
 
@@ -22,19 +34,49 @@ public class Coordinator {
         self.language = language
         tsLanguage = Language(language: language.parser)
 
-        tsClient = try! TreeSitterClient(language: tsLanguage) { codePointIndex in
+        let transformer: Point.LocationTransformer = { codePointIndex in
             guard let location = textView.textContentManager.location(at: codePointIndex),
                   let position = textView.textContentManager.position(location)
             else {
                 return .zero
             }
-
             return Point(row: position.row, column: position.column)
         }
 
+        tsClient = try! TreeSitterClient(language: tsLanguage, transformer: transformer)
 
+        // Spin up parallel clients for any sub-grammars the host language
+        // injects (markdown → markdown_inline today). Each parses the whole
+        // document independently; the token provider intersects their output
+        // with the host's injection ranges so we don't style, e.g., the body
+        // of a fenced code block as if it were inline markdown.
+        var injected: [InjectedClient] = []
+        var hostInjectionsQuery: Query? = nil
+        if let injectionsURL = language.injectionsQueryURL,
+           let parsedInjectionsQuery = try? tsLanguage.query(contentsOf: injectionsURL) {
+            hostInjectionsQuery = parsedInjectionsQuery
+            for (name, info) in language.injectedLanguages {
+                let subLanguage = Language(language: info.parser)
+                guard let subClient = try? TreeSitterClient(language: subLanguage, transformer: transformer),
+                      let subHighlightsQuery = try? subLanguage.query(contentsOf: info.highlightsQueryURL)
+                else {
+                    continue
+                }
+                injected.append(InjectedClient(name: name, client: subClient, highlightsQuery: subHighlightsQuery))
+            }
+        }
+        injectedClients = injected
+        injectionsQuery = hostInjectionsQuery
+
+        // All stored properties are now initialized; safe to install
+        // invalidation handlers that capture `self`.
         tsClient.invalidationHandler = { [weak self] indexSet in
             self?.highlighter?.invalidate(.set(indexSet))
+        }
+        for injected in injectedClients {
+            injected.client.invalidationHandler = { [weak self] indexSet in
+                self?.highlighter?.invalidate(.set(indexSet))
+            }
         }
 
         // set textview default font to theme default font
@@ -46,18 +88,12 @@ public class Coordinator {
 
             if let themeColor = theme.color(forToken: TokenName(neonToken.name)) {
                 attributes[.foregroundColor] = themeColor
-                
-                // TODO: Remove this later.
-                // print("themeColor \(themeColor) for token \(TokenName(neonToken.name))")
 
                 if let themeFont = theme.font(forToken: TokenName(neonToken.name)) {
                     attributes[.font] = themeFont
                 }
             } else if let themeDefaultColor = theme.color(forToken: "plain") {
                 attributes[.foregroundColor] = themeDefaultColor
-                
-                // TODO: Remove this later.
-                // print("themeDefaultColor \(themeDefaultColor) for token \(TokenName(neonToken.name))")
 
                 if let themeFont = theme.font(forToken: TokenName(neonToken.name)) {
                     attributes[.font] = themeFont
@@ -67,14 +103,17 @@ public class Coordinator {
             return !attributes.isEmpty ? attributes : nil
         }, tokenProvider: tokenProvider(textContentManager: textView.textContentManager))
 
-        // initial parse of the whole content
-        tsClient.willChangeContent(in: NSRange(textView.textContentManager.documentRange, in: textView.textContentManager))
-        tsClient.didChangeContent(in: NSRange(textView.textContentManager.documentRange, in: textView.textContentManager),
-                                  delta: textView.textContentManager.length,
-                                  limit: textView.textContentManager.length,
-                                  readHandler: Parser.readFunction(for: textView.textContentManager.attributedString(in: nil)?.string ?? ""),
-                                  completionHandler: {
-        })
+        // initial parse of the whole content (all clients)
+        let docRange = NSRange(textView.textContentManager.documentRange, in: textView.textContentManager)
+        let length = textView.textContentManager.length
+        let readFunction = Parser.readFunction(for: textView.textContentManager.attributedString(in: nil)?.string ?? "")
+
+        tsClient.willChangeContent(in: docRange)
+        tsClient.didChangeContent(in: docRange, delta: length, limit: length, readHandler: readFunction, completionHandler: {})
+        for injected in injectedClients {
+            injected.client.willChangeContent(in: docRange)
+            injected.client.didChangeContent(in: docRange, delta: length, limit: length, readHandler: readFunction, completionHandler: {})
+        }
     }
 
     private func tokenProvider(textContentManager: NSTextContentManager) -> Neon.TokenProvider? {
@@ -83,9 +122,78 @@ public class Coordinator {
             return nil
         }
 
-        return tsClient.tokenProvider(with: highlightsQuery) { range, _ in
+        let textProvider: SwiftTreeSitter.Predicate.TextProvider = { range, _ in
             guard range.isEmpty == false else { return nil }
             return textContentManager.attributedString(in: NSTextRange(range, provider: textContentManager))?.string
+        }
+
+        let blockProvider = tsClient.tokenProvider(with: highlightsQuery, textProvider: textProvider)
+
+        guard !injectedClients.isEmpty, let injectionsQuery else {
+            return blockProvider
+        }
+
+        let injectedClients = self.injectedClients
+        let tsClient = self.tsClient
+
+        return { range, completionHandler in
+            blockProvider(range) { blockResult in
+                guard case .success(let blockApp) = blockResult else {
+                    completionHandler(blockResult)
+                    return
+                }
+
+                // Locate which sub-ranges of `range` are flagged as
+                // injections in the host grammar (e.g. `(inline)` nodes for
+                // markdown). Injected-client tokens that don't sit inside one
+                // of these are dropped — that's how we avoid styling
+                // `*foo*` inside a fenced code block as emphasis.
+                tsClient.executeInjectionsQuery(injectionsQuery, in: range, textProvider: textProvider) { injResult in
+                    guard case .success(let injections) = injResult else {
+                        completionHandler(.success(blockApp))
+                        return
+                    }
+
+                    var rangesByName: [String: IndexSet] = [:]
+                    for inj in injections {
+                        guard let r = Range(inj.range) else { continue }
+                        rangesByName[inj.name, default: IndexSet()].insert(integersIn: r)
+                    }
+
+                    var allTokens = blockApp.tokens
+                    var pending = injectedClients.count
+
+                    let finish: () -> Void = {
+                        completionHandler(.success(TokenApplication(tokens: allTokens)))
+                    }
+
+                    if pending == 0 {
+                        finish()
+                        return
+                    }
+
+                    for injected in injectedClients {
+                        guard let validRanges = rangesByName[injected.name], !validRanges.isEmpty else {
+                            pending -= 1
+                            if pending == 0 { finish() }
+                            continue
+                        }
+
+                        let injectedProvider = injected.client.tokenProvider(with: injected.highlightsQuery, textProvider: textProvider)
+                        injectedProvider(range) { injectedResult in
+                            if case .success(let injectedApp) = injectedResult {
+                                let filtered = injectedApp.tokens.filter { token in
+                                    guard let r = Range(token.range) else { return false }
+                                    return validRanges.contains(integersIn: r)
+                                }
+                                allTokens.append(contentsOf: filtered)
+                            }
+                            pending -= 1
+                            if pending == 0 { finish() }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -111,6 +219,9 @@ public class Coordinator {
 
     func willChangeContent(in range: NSRange) {
         tsClient.willChangeContent(in: range)
+        for injected in injectedClients {
+            injected.client.willChangeContent(in: range)
+        }
     }
 
     func didChangeContent(_ textContentManager: NSTextContentManager, in range: NSRange, delta: Int, limit: Int) {
@@ -119,7 +230,9 @@ public class Coordinator {
         if let str = textContentManager.attributedString(in: nil)?.string {
             let readFunction = Parser.readFunction(for: str)
             tsClient.didChangeContent(in: range, delta: delta, limit: limit, readHandler: readFunction, completionHandler: {})
+            for injected in injectedClients {
+                injected.client.didChangeContent(in: range, delta: delta, limit: limit, readHandler: readFunction, completionHandler: {})
+            }
         }
-
     }
 }

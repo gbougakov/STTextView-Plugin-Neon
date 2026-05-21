@@ -68,6 +68,8 @@ let package = Package(
                 .target(name: "TreeSitterJSONQueries"),
                 .target(name: "TreeSitterMarkdown"),
                 .target(name: "TreeSitterMarkdownQueries"),
+                .target(name: "TreeSitterMarkdownInline"),
+                .target(name: "TreeSitterMarkdownInlineQueries"),
                 .target(name: "TreeSitterPHP"),
                 .target(name: "TreeSitterPHPQueries"),
                 .target(name: "TreeSitterPython"),

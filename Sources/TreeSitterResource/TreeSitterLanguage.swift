@@ -24,6 +24,8 @@ import TreeSitterJSON
 import TreeSitterJSONQueries
 import TreeSitterMarkdown
 import TreeSitterMarkdownQueries
+import TreeSitterMarkdownInline
+import TreeSitterMarkdownInlineQueries
 import TreeSitterPHP
 import TreeSitterPHPQueries
 import TreeSitterPython
@@ -199,4 +201,42 @@ public enum TreeSitterLanguage: CaseIterable, Hashable {
             nil
         }
     }
+
+    /// URL of the language's `injections.scm`, if it has one.
+    /// Used to discover sub-language regions for tree-sitter language injection
+    /// (e.g. markdown's `(inline)` nodes get parsed by `markdown_inline`).
+    public var injectionsQueryURL: URL? {
+        switch self {
+        case .markdown:
+            TreeSitterMarkdownQueries.Query.injectionsFileURL
+        default:
+            nil
+        }
+    }
+
+    /// Sub-grammars that this language's `injections.scm` may inject, keyed by
+    /// the injection name used in the query (the value of `injection.language`).
+    /// Empty for languages without sub-grammar injection.
+    public var injectedLanguages: [String: TreeSitterInjectedLanguage] {
+        switch self {
+        case .markdown:
+            ["markdown_inline": .markdownInline]
+        default:
+            [:]
+        }
+    }
+}
+
+/// A tree-sitter sub-grammar injected into a host grammar at runtime.
+/// Exposed via `TreeSitterLanguage.injectedLanguages` so the plugin's
+/// Coordinator can spin up a parallel `TreeSitterClient` for each one without
+/// importing the individual TreeSitter*Inline targets directly.
+public struct TreeSitterInjectedLanguage {
+    public let parser: OpaquePointer
+    public let highlightsQueryURL: URL
+
+    public static let markdownInline = TreeSitterInjectedLanguage(
+        parser: tree_sitter_markdown_inline(),
+        highlightsQueryURL: TreeSitterMarkdownInlineQueries.Query.highlightsFileURL
+    )
 }
