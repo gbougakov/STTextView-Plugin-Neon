@@ -164,6 +164,11 @@ public class Coordinator {
                     var pending = injectedClients.count
 
                     let finish: () -> Void = {
+                        // TEMP DIAGNOSTIC — remove before merging
+                        NSLog("NEON-DBG === composed tokens for range %@ ===", NSStringFromRange(range))
+                        for t in allTokens {
+                            NSLog("NEON-DBG   [%d..<%d) %@", t.range.location, t.range.location + t.range.length, t.name)
+                        }
                         completionHandler(.success(TokenApplication(tokens: allTokens)))
                     }
 
