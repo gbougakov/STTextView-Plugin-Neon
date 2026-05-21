@@ -25,20 +25,20 @@ class STTextViewSystemInterface: TextSystemInterface {
     }
 
     func applyStyle(to token: Neon.Token) {
-        guard let attrs = attributeProvider(token),
-              let textRange = NSTextRange(token.range, in: textView.textContentManager)
+        guard var attrs = attributeProvider(token),
+              NSTextRange(token.range, in: textView.textContentManager) != nil
         else {
             return
         }
 
-        for attr in attrs {
-            if attr.key == .foregroundColor {
-                guard let color = attr.value as? NSColor else { continue }
-                textView.addAttributes([.foregroundColor: color], range: token.range)
-            } else {
-                textView.addAttributes([attr.key: attr.value], range: token.range)
-            }
+        // Preserve the nil-foreground-color guard from the previous per-key loop:
+        // drop foregroundColor if the provider supplied a non-NSColor value.
+        if let fg = attrs[.foregroundColor], !(fg is NSColor) {
+            attrs.removeValue(forKey: .foregroundColor)
         }
+
+        guard !attrs.isEmpty else { return }
+        textView.addAttributes(attrs, range: token.range)
     }
 
     var length: Int {
