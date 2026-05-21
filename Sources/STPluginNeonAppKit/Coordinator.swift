@@ -9,6 +9,21 @@ import SwiftTreeSitter
 //import TreeSitter
 import TreeSitterResource
 
+// TEMP DIAGNOSTIC: append to /tmp/neon-dbg.log so we can read it after the run.
+@inline(never)
+private func _neonDbg(_ msg: String) {
+    let path = "/tmp/neon-dbg.log"
+    let fm = FileManager.default
+    if !fm.fileExists(atPath: path) {
+        fm.createFile(atPath: path, contents: nil)
+    }
+    if let h = FileHandle(forWritingAtPath: path) {
+        h.seekToEndOfFile()
+        h.write(Data((msg + "\n").utf8))
+        try? h.close()
+    }
+}
+
 @MainActor
 public class Coordinator {
     /// A parallel `TreeSitterClient` for one sub-grammar injected into the host
@@ -129,7 +144,7 @@ public class Coordinator {
 
         let blockProvider = tsClient.tokenProvider(with: highlightsQuery, textProvider: textProvider)
 
-        FileHandle.standardError.write(Data("NEON-DBG tokenProvider built; injectedClients=\(injectedClients.count) injectionsQuery=\(injectionsQuery != nil)\n".utf8))
+        _neonDbg("tokenProvider built; injectedClients=\(injectedClients.count) injectionsQuery=\(injectionsQuery != nil)")
 
         guard !injectedClients.isEmpty, let injectionsQuery else {
             return blockProvider
@@ -139,9 +154,9 @@ public class Coordinator {
         let tsClient = self.tsClient
 
         return { range, completionHandler in
-            FileHandle.standardError.write(Data("NEON-DBG composed provider called for range \(range)\n".utf8))
+            _neonDbg("composed provider called for range \(range)")
             blockProvider(range) { blockResult in
-                FileHandle.standardError.write(Data("NEON-DBG block result success=\(((try? blockResult.get()) != nil))\n".utf8))
+                _neonDbg("block result success=\(((try? blockResult.get()) != nil))")
                 guard case .success(let blockApp) = blockResult else {
                     completionHandler(blockResult)
                     return
@@ -168,12 +183,11 @@ public class Coordinator {
                     var pending = injectedClients.count
 
                     let finish: () -> Void = {
-                        // TEMP DIAGNOSTIC — remove before merging
-                        var dump = "NEON-DBG === composed tokens for range \(range) ===\n"
+                        var dump = "=== composed tokens for range \(range) ===\n"
                         for t in allTokens {
-                            dump += "NEON-DBG   [\(t.range.location)..<\(t.range.location + t.range.length)) \(t.name)\n"
+                            dump += "  [\(t.range.location)..<\(t.range.location + t.range.length)) \(t.name)\n"
                         }
-                        FileHandle.standardError.write(Data(dump.utf8))
+                        _neonDbg(dump)
                         completionHandler(.success(TokenApplication(tokens: allTokens)))
                     }
 
