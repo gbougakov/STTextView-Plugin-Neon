@@ -21,7 +21,7 @@ class STTextViewSystemInterface: TextSystemInterface {
         }
 
         textView.textLayoutManager.removeRenderingAttribute(.foregroundColor, for: textRange)
-        textView.addAttributes([.font: textView.font], range: range)
+        textView.addAttributes([.font: textView.font, .foregroundColor: textView.textColor], range: range)
     }
 
     func applyStyle(to token: Neon.Token) {
@@ -34,7 +34,7 @@ class STTextViewSystemInterface: TextSystemInterface {
         for attr in attrs {
             if attr.key == .foregroundColor {
                 guard let color = attr.value as? NSColor else { continue }
-                textView.textLayoutManager.addRenderingAttribute(.foregroundColor, value: color, for: textRange)
+                textView.addAttributes([.foregroundColor: color], range: token.range)
             } else {
                 textView.addAttributes([attr.key: attr.value], range: token.range)
             }
