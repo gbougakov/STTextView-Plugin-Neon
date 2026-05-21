@@ -9,21 +9,6 @@ import SwiftTreeSitter
 //import TreeSitter
 import TreeSitterResource
 
-// TEMP DIAGNOSTIC: write under the app container so we don't trip the sandbox.
-@inline(never)
-private func _neonDbg(_ msg: String) {
-    let path = (NSTemporaryDirectory() as NSString).appendingPathComponent("neon-dbg.log")
-    let fm = FileManager.default
-    if !fm.fileExists(atPath: path) {
-        fm.createFile(atPath: path, contents: nil)
-    }
-    if let h = FileHandle(forWritingAtPath: path) {
-        h.seekToEndOfFile()
-        h.write(Data((msg + "\n").utf8))
-        try? h.close()
-    }
-}
-
 @MainActor
 public class Coordinator {
     /// A parallel `TreeSitterClient` for one sub-grammar injected into the host
@@ -144,8 +129,6 @@ public class Coordinator {
 
         let blockProvider = tsClient.tokenProvider(with: highlightsQuery, textProvider: textProvider)
 
-        _neonDbg("tokenProvider built; injectedClients=\(injectedClients.count) injectionsQuery=\(injectionsQuery != nil)")
-
         guard !injectedClients.isEmpty, let injectionsQuery else {
             return blockProvider
         }
@@ -154,9 +137,7 @@ public class Coordinator {
         let tsClient = self.tsClient
 
         return { range, completionHandler in
-            _neonDbg("composed provider called for range \(range)")
             blockProvider(range) { blockResult in
-                _neonDbg("block result success=\(((try? blockResult.get()) != nil))")
                 guard case .success(let blockApp) = blockResult else {
                     completionHandler(blockResult)
                     return
@@ -183,11 +164,22 @@ public class Coordinator {
                     var pending = injectedClients.count
 
                     let finish: () -> Void = {
-                        var dump = "=== composed tokens for range \(range) ===\n"
-                        for t in allTokens {
-                            dump += "  [\(t.range.location)..<\(t.range.location + t.range.length)) \(t.name)\n"
+                        // Neon's `applyStyle` merges via `addAttributes`, so the
+                        // LAST token to touch a character wins. We want broader
+                        // (less-specific) tokens applied first and narrower ones
+                        // overriding. Sort by [start ASC, length DESC] —
+                        // tree-sitter's own `highlights()` sort uses pattern
+                        // index as the final tiebreak, which lets narrow tokens
+                        // beat broader ones at the same start (e.g. a single
+                        // `*` `punctuation.delimiter` ahead of the enclosing
+                        // `**...**` `text.strong`). That's the wrong order to
+                        // *apply* in, so we override here.
+                        allTokens.sort { lhs, rhs in
+                            if lhs.range.location != rhs.range.location {
+                                return lhs.range.location < rhs.range.location
+                            }
+                            return lhs.range.length > rhs.range.length
                         }
-                        _neonDbg(dump)
                         completionHandler(.success(TokenApplication(tokens: allTokens)))
                     }
 
