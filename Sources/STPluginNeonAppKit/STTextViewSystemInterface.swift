@@ -33,7 +33,8 @@ class STTextViewSystemInterface: TextSystemInterface {
 
         for attr in attrs {
             if attr.key == .foregroundColor {
-                textView.textLayoutManager.addRenderingAttribute(.foregroundColor, value: attr.value, for: textRange)
+                guard let color = attr.value as? NSColor else { continue }
+                textView.textLayoutManager.addRenderingAttribute(.foregroundColor, value: color, for: textRange)
             } else {
                 textView.addAttributes([attr.key: attr.value], range: token.range)
             }
