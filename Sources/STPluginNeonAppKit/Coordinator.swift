@@ -129,6 +129,8 @@ public class Coordinator {
 
         let blockProvider = tsClient.tokenProvider(with: highlightsQuery, textProvider: textProvider)
 
+        FileHandle.standardError.write(Data("NEON-DBG tokenProvider built; injectedClients=\(injectedClients.count) injectionsQuery=\(injectionsQuery != nil)\n".utf8))
+
         guard !injectedClients.isEmpty, let injectionsQuery else {
             return blockProvider
         }
@@ -137,7 +139,9 @@ public class Coordinator {
         let tsClient = self.tsClient
 
         return { range, completionHandler in
+            FileHandle.standardError.write(Data("NEON-DBG composed provider called for range \(range)\n".utf8))
             blockProvider(range) { blockResult in
+                FileHandle.standardError.write(Data("NEON-DBG block result success=\(((try? blockResult.get()) != nil))\n".utf8))
                 guard case .success(let blockApp) = blockResult else {
                     completionHandler(blockResult)
                     return
@@ -165,10 +169,11 @@ public class Coordinator {
 
                     let finish: () -> Void = {
                         // TEMP DIAGNOSTIC — remove before merging
-                        NSLog("NEON-DBG === composed tokens for range %@ ===", NSStringFromRange(range))
+                        var dump = "NEON-DBG === composed tokens for range \(range) ===\n"
                         for t in allTokens {
-                            NSLog("NEON-DBG   [%d..<%d) %@", t.range.location, t.range.location + t.range.length, t.name)
+                            dump += "NEON-DBG   [\(t.range.location)..<\(t.range.location + t.range.length)) \(t.name)\n"
                         }
+                        FileHandle.standardError.write(Data(dump.utf8))
                         completionHandler(.success(TokenApplication(tokens: allTokens)))
                     }
 
